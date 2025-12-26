@@ -1,11 +1,9 @@
 import streamlit as st
 from openai import OpenAI
 import json
-import os
-import time
 import markdown
-from xhtml2pdf import pisa
 import re
+from fpdf import FPDF
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Gerador de Livros IA", page_icon="📚")
@@ -13,114 +11,94 @@ st.set_page_config(page_title="Gerador de Livros IA", page_icon="📚")
 st.title("📚 Fábrica de Livros com IA")
 st.write("Crie livros completos em PDF direto pelo celular.")
 
-# --- BARRA LATERAL (Configurações) ---
 with st.sidebar:
     st.header("Configurações")
     api_key = st.text_input("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", type="password")
     st.info("Pegue sua chave em: console.groq.com")
 
-# --- FUNÇÕES DE BASTIDORES ---
 def limpar_texto(texto):
-    return re.sub(r'[^\w\s,.?!:;\-\(\)áéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ0-9"\'/]', '', texto)
+    # Remove caracteres especiais que o PDF básico não entende
+    return re.sub(r'[^\x00-\x7FáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ ]+', '', texto)
 
-def gerar_pdf_final(plano, conteudo_md):
-    # 1. HTML DA CAPA
-    html_capa = f"""
-    <div class="capa">
-        <div class="titulo-principal">{plano['titulo_livro']}</div>
-        <div class="subtitulo">{plano['subtitulo']}</div>
-        <div class="divisor"></div>
-        <div class="autor">Autor: {plano['autor_ficticio']}</div>
-    </div>
-    <pdf:nextpage />
-    """
+def gerar_pdf_fpdf(plano, conteudo_md):
+    pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     
-    # 2. HTML DO CONTEÚDO
-    html_texto = markdown.markdown(limpar_texto(conteudo_md))
+    # --- CAPA ---
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 30)
+    pdf.ln(60)
+    pdf.multi_cell(0, 15, limpar_texto(plano['titulo_livro']).upper(), align="C")
     
-    # 3. CSS
-    css = """
-    <style>
-        @page { size: A4; margin: 2cm; }
-        body { font-family: Helvetica, sans-serif; }
-        .capa { text-align: center; padding-top: 200px; }
-        .titulo-principal { font-size: 35pt; font-weight: bold; color: #2c3e50; }
-        .subtitulo { font-size: 18pt; color: #7f8c8d; margin-top: 10px; }
-        .divisor { width: 50px; height: 5px; background: #e74c3c; margin: 30px auto; }
-        h1 { color: #2980b9; page-break-before: always; border-bottom: 1px solid #ddd; }
-        p { text-align: justify; line-height: 1.5; }
-    </style>
-    """
+    pdf.set_font("Helvetica", "I", 16)
+    pdf.ln(10)
+    pdf.multi_cell(0, 10, limpar_texto(plano['subtitulo']), align="C")
     
-    html_final = f"<html><head><meta charset='utf-8'>{css}</head><body>{html_capa}{html_texto}</body></html>"
+    pdf.set_font("Helvetica", "", 12)
+    pdf.ln(100)
+    pdf.cell(0, 10, f"Autor: {limpar_texto(plano['autor_ficticio'])}", align="C")
     
-    # Gera PDF em memória
-    output_filename = "Livro_Gerado.pdf"
-    with open(output_filename, "wb") as f:
-        pisa.CreatePDF(html_final, dest=f)
-    return output_filename
+    # --- CONTEÚDO ---
+    # Quebra o markdown em parágrafos simples para o PDF
+    pdf.add_page()
+    pdf.set_font("Helvetica", "", 12)
+    
+    linhas = conteudo_md.split('\n')
+    for linha in linhas:
+        linha_limpa = limpar_texto(linha)
+        if linha.startswith('# '): # Título de capítulo
+            pdf.ln(10)
+            pdf.set_font("Helvetica", "B", 18)
+            pdf.multi_cell(0, 10, linha_limpa.replace('# ', ''))
+            pdf.set_font("Helvetica", "", 12)
+            pdf.ln(5)
+        elif linha.strip() == "---":
+            pdf.add_page()
+        else:
+            pdf.multi_cell(0, 8, linha_limpa)
+            pdf.ln(2)
 
-# --- INTERFACE PRINCIPAL ---
-tema = st.text_input("Sobre o que é o livro?", placeholder="Ex: Adestramento de cães")
-paginas = st.slider("Número aproximado de páginas:", 5, 50, 15)
+    pdf.output("Livro_Final.pdf")
+    return "Livro_Final.pdf"
+
+# --- INTERFACE ---
+tema = st.text_input("Sobre o que é o livro?", placeholder="Ex: Tráfego Pago")
+paginas = st.slider("Número de páginas:", 5, 50, 15)
 
 if st.button("🚀 Gerar Livro Agora"):
     if not api_key:
-        st.error("Por favor, coloque sua API Key na barra lateral esquerda!")
+        st.error("Coloque sua API Key na lateral!")
     elif not tema:
-        st.warning("Digite um tema para o livro.")
+        st.warning("Defina um tema.")
     else:
-        # CONEXÃO
         client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
         status = st.empty()
-        progresso = st.progress(0)
-
+        
         try:
-            # 1. PLANEJAMENTO
-            status.write("🧠 Planejando capítulos e título...")
-            prompt_plan = f"Crie um JSON com 'titulo_livro', 'subtitulo', 'autor_ficticio' e uma lista 'estrutura' (capitulo, titulo, descricao) para um livro sobre {tema} com {paginas} paginas. Retorne APENAS JSON."
+            status.write("🧠 Planejando capítulos...")
+            prompt_plan = f"Retorne APENAS um JSON com 'titulo_livro', 'subtitulo', 'autor_ficticio' e uma lista 'estrutura' (capitulo, titulo, descricao) para um livro sobre {tema} com {paginas} paginas."
             
             res_plan = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=[{"role": "user", "content": prompt_plan}]
             )
             plano = json.loads(res_plan.choices[0].message.content.replace("```json","").replace("```",""))
-            st.success(f"Título criado: {plano['titulo_livro']}")
-            progresso.progress(30)
-
-            # 2. ESCRITA
-            livro_md = ""
-            total_caps = len(plano['estrutura'])
             
-            for i, cap in enumerate(plano['estrutura']):
+            livro_md = ""
+            for cap in plano['estrutura']:
                 status.write(f"✍️ Escrevendo: {cap['titulo']}...")
-                prompt_write = f"Escreva o capítulo '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Seja detalhado."
-                
                 res_write = client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
-                    messages=[{"role": "user", "content": prompt_write}]
+                    messages=[{"role": "user", "content": f"Escreva o capítulo '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}."}]
                 )
-                texto_cap = res_write.choices[0].message.content
-                livro_md += f"\n\n# {cap['titulo']}\n\n{texto_cap}\n\n"
-                
-                # Atualiza barra de progresso
-                percentual = 30 + int((i+1) / total_caps * 50)
-                progresso.progress(percentual)
+                livro_md += f"\n\n# {cap['titulo']}\n\n{res_write.choices[0].message.content}\n\n---\n"
 
-            # 3. DIAGRAMAÇÃO
-            status.write("🎨 Diagramando PDF e criando capa...")
-            arquivo_pdf = gerar_pdf_final(plano, livro_md)
-            progresso.progress(100)
+            status.write("🎨 Gerando PDF...")
+            arquivo_pdf = gerar_pdf_fpdf(plano, livro_md)
+            
+            with open(arquivo_pdf, "rb") as f:
+                st.download_button("📥 Baixar Livro em PDF", f, "Meu_Livro_IA.pdf", "application/pdf")
             status.write("✅ Concluído!")
 
-            # 4. BOTÃO DE DOWNLOAD
-            with open(arquivo_pdf, "rb") as f:
-                st.download_button(
-                    label="📥 Baixar Livro em PDF",
-                    data=f,
-                    file_name="Meu_Livro_IA.pdf",
-                    mime="application/pdf"
-                )
-
         except Exception as e:
-            st.error(f"Ocorreu um erro: {e}")
+            st.error(f"Erro: {e}")
