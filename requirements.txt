@@ -1,0 +1,4 @@
+streamlit
+openai
+markdown
+xhtml2pdf
