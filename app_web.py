@@ -1,242 +1,231 @@
 import streamlit as st
-from openai import OpenAI
+import google.generativeai as genai
 import json
 import re
 import requests
+import time
+import tempfile
+import os
 from fpdf import FPDF
 from io import BytesIO
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Editora IA Pro", page_icon="📚", layout="wide")
+st.set_page_config(page_title="Editora IA Gemini", page_icon="📚", layout="wide")
 
-# --- CSS PARA DEIXAR O APP BONITO ---
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #FF4B4B; color: white; height: 3em; }
+    .stButton>button { width: 100%; background-color: #4B90FF; color: white; height: 3em; }
     .status-box { padding: 10px; border-radius: 5px; border: 1px solid #ddd; margin-bottom: 10px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📚 Editora IA Pro: Livros de Alta Densidade")
-st.markdown("Crie livros **extensos**, com **capa gerada por IA** e diagramação profissional.")
+st.title("📚 Fábrica de Livros (Motor Gemini)")
+st.info("Otimizado para livros longos (até 200+ páginas) sem erros de limite.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
     st.header("⚙️ Configurações")
-    api_key = st.text_input("Sua API Key (Groq):", type="password")
-    st.info("Obtenha em: console.groq.com")
+    api_key = st.text_input("Google API Key:", type="password")
+    st.markdown("[Pegar Chave Grátis Aqui](https://aistudio.google.com/app/apikey)")
     st.divider()
     estilo_texto = st.selectbox("Estilo de Escrita:", 
-        ["Didático e Simples", "Acadêmico e Denso", "Storytelling Emocionante", "Técnico e Direto"])
+        ["Didático e Simples", "Acadêmico e Denso", "Storytelling", "Técnico Profissional"])
 
-# --- CLASSE PDF AVANÇADA (COM RODAPÉ) ---
+# --- CLASSE PDF ---
 class PDF(FPDF):
     def footer(self):
-        # Posiciona a 1.5cm do fim da página
         self.set_y(-15)
         self.set_font("helvetica", "I", 8)
         self.set_text_color(128)
-        # Imprime número da página centralizado
         self.cell(0, 10, f'Página {self.page_no()}', align='C')
 
 def limpar_texto(texto):
-    # Limpa caracteres que quebram o PDF, mantendo acentos
     if not texto: return ""
+    # Remove formatações Markdown que atrapalham o PDF
+    texto = texto.replace("**", "").replace("*", "").replace("##", "").replace("#", "")
     return re.sub(r'[^\x00-\x7FáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ0-9.,:;?!()"\'-]', '', texto)
 
 def baixar_imagem_capa(prompt_imagem):
-    """
-    Gera uma imagem via Pollinations.ai (Grátis, sem API Key)
-    """
     prompt_formatado = prompt_imagem.replace(" ", "%20")
-    url = f"https://image.pollinations.ai/prompt/{prompt_formatado}?width=1080&height=1420&nologo=true"
+    # Usa Pollinations para gerar imagem
+    url = f"https://image.pollinations.ai/prompt/{prompt_formatado}?width=1080&height=1420&nologo=true&seed=42"
     try:
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            return BytesIO(response.content)
+            return response.content # Retorna bytes puros
     except:
         return None
     return None
 
-def gerar_pdf_pro(plano, conteudo_completo, imagem_capa_bytes):
+def gerar_pdf_final(plano, conteudo_completo, imagem_bytes):
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     
-    # --- 1. CAPA VISUAL ---
+    # --- 1. CAPA (TÉCNICA DO ARQUIVO TEMPORÁRIO) ---
+    # Isso corrige o erro '_io.BytesIO object has no attribute rfind'
     pdf.add_page()
     
-    # Se tiver imagem, coloca ela ocupando quase toda a página
-    if imagem_capa_bytes:
-        pdf.image(imagem_capa_bytes, x=0, y=0, w=210, h=297) # A4 Full size background
+    if imagem_bytes:
+        # Salva imagem num arquivo temporário real para o FPDF conseguir ler
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+            tmp_file.write(imagem_bytes)
+            tmp_path = tmp_file.name
         
-    # Título sobreposto (Fundo branco semi-transparente simulado ou caixa de texto)
-    pdf.set_y(150)
-    pdf.set_font("Helvetica", "B", 36)
-    pdf.set_text_color(255, 255, 255) # Texto Branco
-    # Sombra preta para leitura
-    with pdf.local_context(fill_opacity=0.5):
-        pdf.set_fill_color(0, 0, 0)
-        pdf.cell(0, 20, "", ln=1, fill=True) 
+        try:
+            pdf.image(tmp_path, x=0, y=0, w=210, h=297)
+        except:
+            pass # Se falhar a imagem, segue sem ela
         
-    pdf.set_y(150)
-    pdf.multi_cell(0, 15, limpar_texto(plano['titulo_livro']).upper(), align="C")
+        # Remove o arquivo temporário depois de usar
+        try:
+            os.remove(tmp_path)
+        except:
+            pass
+
+    # Título na Capa
+    pdf.set_y(140)
+    pdf.set_font("Helvetica", "B", 30)
+    # Caixa semi-transparente simulada (preto fundo)
+    pdf.set_fill_color(0, 0, 0) 
+    pdf.set_text_color(255, 255, 255)
+    
+    titulo = limpar_texto(plano['titulo_livro']).upper()
+    pdf.multi_cell(0, 15, titulo, align="C", fill=True)
     
     pdf.set_y(260)
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, f"Autor: {limpar_texto(plano['autor_ficticio'])}", align="C")
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, f"Autor IA: {limpar_texto(plano['autor_ficticio'])}", align="C", fill=True)
 
     # --- 2. SUMÁRIO ---
     pdf.add_page()
-    pdf.set_text_color(0, 0, 0) # Volta para preto
+    pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "B", 20)
     pdf.cell(0, 20, "SUMÁRIO", ln=True, align='C')
-    pdf.ln(10)
     
     pdf.set_font("Helvetica", "", 12)
     for cap in plano['estrutura']:
-        titulo_limpo = limpar_texto(cap['titulo'])
-        pdf.cell(0, 10, f"{cap['capitulo']}. {titulo_limpo}", ln=True)
-        # Se tiver subtópicos, lista eles (opcional, simplificado aqui)
+        pdf.cell(0, 10, f"{cap['capitulo']}. {limpar_texto(cap['titulo'])}", ln=True)
 
-    # --- 3. CONTEÚDO (O GROSSO DO LIVRO) ---
+    # --- 3. CONTEÚDO ---
     for capitulo in conteudo_completo:
         pdf.add_page()
         
-        # Título do Capítulo Estilizado
-        pdf.set_font("Helvetica", "B", 24)
-        pdf.set_text_color(44, 62, 80) # Azul escuro
-        pdf.multi_cell(0, 15, limpar_texto(capitulo['titulo']))
+        # Título do Capítulo
+        pdf.set_font("Helvetica", "B", 22)
+        pdf.set_text_color(0, 51, 102) # Azul Marinho
+        pdf.multi_cell(0, 12, limpar_texto(capitulo['titulo']))
         pdf.ln(5)
-        pdf.line(10, pdf.get_y(), 200, pdf.get_y()) # Linha separadora
+        
+        # Linha divisória
+        pdf.set_draw_color(200, 200, 200)
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(10)
         
-        # Texto do Capítulo
+        # Corpo do texto
         pdf.set_font("Helvetica", "", 12)
         pdf.set_text_color(0, 0, 0)
         
-        # Tratamento simples de markdown para PDF
-        texto_bruto = capitulo['texto']
-        paragrafos = texto_bruto.split('\n')
+        texto_limpo = limpar_texto(capitulo['texto'])
+        pdf.multi_cell(0, 6, texto_limpo)
         
-        for p in paragrafos:
-            p = limpar_texto(p)
-            if not p.strip():
-                continue
-            
-            if p.startswith('#'): # Subtitulos
-                pdf.ln(5)
-                pdf.set_font("Helvetica", "B", 14)
-                pdf.set_text_color(230, 126, 34) # Laranja
-                pdf.multi_cell(0, 10, p.replace('#', '').strip())
-                pdf.set_font("Helvetica", "", 12)
-                pdf.set_text_color(0, 0, 0)
-            else:
-                pdf.multi_cell(0, 7, p)
-                pdf.ln(3)
-
-    return pdf.output(dest="S").encode("latin-1") # Retorna bytes para download
+    return pdf.output(dest="S").encode("latin-1")
 
 # --- LÓGICA PRINCIPAL ---
-tema = st.text_input("Sobre o que é o livro?", placeholder="Ex: Guia Completo de Investimentos")
+tema = st.text_input("Tema do Livro:", placeholder="Ex: História da Roma Antiga")
 col1, col2 = st.columns(2)
 with col1:
-    # Aumentei o limite para 200, mas atenção ao tempo de processamento!
-    paginas_alvo = st.slider("Meta de Páginas (Aprox):", 10, 200, 30)
+    paginas_alvo = st.slider("Meta de Páginas:", 10, 200, 50)
 with col2:
-    densidade = st.slider("Densidade do Conteúdo (Detalhe):", 1, 5, 3, help="5 = Capítulos muito longos e detalhados")
+    densidade = st.slider("Profundidade (1-5):", 1, 5, 4)
 
-if st.button("🚀 INICIAR PRODUÇÃO DO LIVRO"):
-    if not api_key or not tema:
-        st.error("Preencha a API Key e o Tema!")
+if st.button("🚀 INICIAR FÁBRICA (GEMINI)"):
+    if not api_key:
+        st.error("Coloque a chave do Google Gemini na lateral!")
+    elif not tema:
+        st.warning("Digite um tema.")
     else:
-        client = OpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
-        status = st.status("🏗️ Iniciando a engenharia do livro...", expanded=True)
+        # Configura Gemini
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        status = st.status("🏗️ Iniciando os motores do Gemini...", expanded=True)
         
         try:
-            # 1. PLANEJAMENTO EXPANDIDO (O Segredo das 200 páginas)
-            # Para ter muitas páginas, precisamos de MUITOS capítulos.
-            num_capitulos = int(paginas_alvo / 3) # Média de 3 páginas por capítulo
+            # 1. PLANEJAMENTO
+            num_capitulos = int(paginas_alvo / 2.5) # Ajuste para gerar volume
             if num_capitulos < 5: num_capitulos = 5
             
-            status.write(f"🧠 Planejando estrutura para {num_capitulos} capítulos...")
+            status.write(f"🧠 Criando arquitetura para {num_capitulos} capítulos...")
             
             prompt_plan = f"""
-            Crie a estrutura de um livro EXTREMAMENTE COMPLETO sobre: {tema}.
-            O usuário quer um livro de {paginas_alvo} páginas.
-            Para isso, preciso de EXATAMENTE {num_capitulos} capítulos no JSON.
+            Aja como um Editor Chefe. Crie a estrutura de um livro sobre: {tema}.
+            O livro deve ser LONGO, com meta de {paginas_alvo} páginas.
+            Crie EXATAMENTE {num_capitulos} capítulos.
             
-            Estilo desejado: {estilo_texto}.
-            Inclua também um 'prompt_imagem_capa' (em inglês) descrevendo uma capa épica para este livro.
-            
-            Retorne JSON puro com: 'titulo_livro', 'subtitulo', 'autor_ficticio', 'prompt_imagem_capa' e lista 'estrutura' (capitulo, titulo, descricao_detalhada).
+            Retorne APENAS UM JSON (sem markdown) com:
+            - 'titulo_livro'
+            - 'subtitulo'
+            - 'autor_ficticio'
+            - 'prompt_imagem_capa' (Descrição visual em inglês para a capa)
+            - 'estrutura': lista de objetos com 'capitulo' (numero), 'titulo', 'descricao'.
             """
             
-            res_plan = client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt_plan}],
-                temperature=0.7
-            )
-            
-            texto_json = res_plan.choices[0].message.content.replace("```json","").replace("```","")
+            res_plan = model.generate_content(prompt_plan)
+            texto_json = res_plan.text.replace("```json", "").replace("```", "").strip()
             plano = json.loads(texto_json)
-            st.success(f"📖 Título Definido: {plano['titulo_livro']}")
             
-            # 2. GERAÇÃO DA CAPA (Pollinations)
-            status.write("🎨 Pintando a capa do livro com IA...")
-            img_bytes = baixar_imagem_capa(plano.get('prompt_imagem_capa', f"Cover for book about {tema}"))
+            st.success(f"📘 Título: {plano['titulo_livro']}")
+            
+            # 2. CAPA
+            status.write("🎨 Gerando capa com IA...")
+            img_bytes = baixar_imagem_capa(plano.get('prompt_imagem_capa', f"Book cover about {tema}"))
             if img_bytes:
-                st.image(img_bytes, caption="Capa Gerada", width=200)
+                st.image(img_bytes, caption="Capa Gerada", width=150)
             
-            # 3. ESCRITA EM LOOP (Com Densidade)
-            conteudo_completo = []
+            # 3. ESCRITA (Aqui o Gemini brilha)
+            conteudo = []
             barra = status.progress(0)
-            
-            total = len(plano['estrutura'])
+            total_caps = len(plano['estrutura'])
             
             for i, cap in enumerate(plano['estrutura']):
-                status.write(f"✍️ Escrevendo Cap {cap['capitulo']}/{total}: {cap['titulo']}...")
+                status.write(f"✍️ Escrevendo Cap {cap['capitulo']}/{total_caps}: {cap['titulo']}...")
                 
-                # Prompt para TEXTÃO
-                prompt_write = f"""
+                prompt_text = f"""
                 Escreva o CAPÍTULO {cap['capitulo']} do livro '{plano['titulo_livro']}'.
-                Título do Capítulo: {cap['titulo']}
-                O que abordar: {cap['descricao_detalhada']}
+                Título: {cap['titulo']}
+                Contexto: {cap['descricao']}
                 
-                REGRAS DE OURO PARA TEXTO LONGO E BONITO:
-                1. Escreva um texto LONGO, profundo e detalhado (Mínimo 1000 palavras).
-                2. Use subtítulos (iniciados com #) para quebrar o texto.
-                3. Use listas com marcadores para exemplos.
-                4. Estilo: {estilo_texto}.
-                5. Não faça introduções curtas, aprofunde-se no tema.
-                
-                Retorne apenas o texto do corpo do capítulo.
+                REGRAS:
+                1. Escreva um texto MUITO DETALHADO, didático e longo (mínimo 800 palavras).
+                2. Use subtítulos para organizar.
+                3. Estilo: {estilo_texto}.
+                4. Não use Markdown complexo, apenas texto corrido e parágrafos.
                 """
                 
                 try:
-                    res_text = client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
-                        messages=[{"role": "user", "content": prompt_write}]
-                    )
-                    texto_cap = res_text.choices[0].message.content
-                    conteudo_completo.append({"titulo": cap['titulo'], "texto": texto_cap})
+                    res_text = model.generate_content(prompt_text)
+                    conteudo.append({"titulo": cap['titulo'], "texto": res_text.text})
                 except Exception as e:
-                    st.warning(f"Erro no cap {i}: {e}")
+                    st.error(f"Erro no cap {i}: {e}")
+                    # Tenta esperar um pouco se der erro de velocidade, mas Gemini é rápido
+                    time.sleep(2) 
                 
-                barra.progress((i + 1) / total)
+                barra.progress((i + 1) / total_caps)
+                time.sleep(1) # Pausa de segurança de 1s entre capítulos
 
-            # 4. DIAGRAMAÇÃO FINAL
-            status.write("🖨️ Diagramando PDF com capa e rodapés...")
-            pdf_bytes = gerar_pdf_pro(plano, conteudo_completo, img_bytes)
+            # 4. PDF
+            status.write("🖨️ Imprimindo PDF final...")
+            pdf_bytes = gerar_pdf_final(plano, conteudo, img_bytes)
             
-            status.update(label="✅ Livro Pronto!", state="complete", expanded=False)
-            
+            status.update(label="✅ Livro Concluído!", state="complete", expanded=False)
             st.balloons()
+            
             st.download_button(
-                label=f"📥 BAIXAR LIVRO COMPLETO ({len(conteudo_completo)} Capítulos)",
+                label=f"📥 BAIXAR LIVRO ({total_caps} Capítulos)",
                 data=pdf_bytes,
-                file_name=f"{limpar_texto(plano['titulo_livro'])}.pdf",
+                file_name=f"Livro_Gemini_{limpar_texto(tema)[:20]}.pdf",
                 mime="application/pdf"
             )
 
         except Exception as e:
-            st.error(f"Erro fatal: {e}")
+            st.error(f"Erro Fatal: {e}")
