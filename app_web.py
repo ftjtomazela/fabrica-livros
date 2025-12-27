@@ -1,6 +1,5 @@
 import streamlit as st
-from google import genai # <--- ESSA É A BIBLIOTECA NOVA
-from google.genai import types
+import google.generativeai as genai
 import json
 import re
 import requests
@@ -9,30 +8,58 @@ import tempfile
 import os
 from fpdf import FPDF
 
-# --- CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="Editora IA (Versão Final)", page_icon="💎", layout="wide")
+# --- CONFIGURAÇÃO ---
+st.set_page_config(page_title="Fábrica de Livros (Scanner)", page_icon="📡", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #2e86de; color: white; height: 3em; border-radius: 8px; }
-    .status-box { padding: 15px; border-radius: 10px; background-color: #f8f9fa; border: 1px solid #ddd; margin-bottom: 20px; }
-    h1 { color: #2c3e50; }
+    .stButton>button { width: 100%; background-color: #0066cc; color: white; height: 3em; }
+    .status-box { padding: 10px; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("💎 Fábrica de Livros (Google GenAI V1)")
-st.caption("Código atualizado para a nova biblioteca oficial do Google.")
+st.title("📡 Fábrica de Livros (Auto-Detector)")
+st.caption("Este sistema detecta automaticamente quais modelos sua chave pode acessar.")
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL INTELIGENTE ---
 with st.sidebar:
-    st.header("⚙️ Configuração")
-    api_key = st.text_input("Sua API Key do Google:", type="password")
-    st.markdown("[Criar Chave Grátis Aqui](https://aistudio.google.com/app/apikey)")
+    st.header("🔑 Acesso")
+    api_key = st.text_input("Cole sua API Key do Google:", type="password")
+    
+    modelo_escolhido = None
+    
+    if api_key:
+        try:
+            genai.configure(api_key=api_key)
+            # O "Scanner": Lista apenas modelos que geram texto
+            modelos_disponiveis = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    modelos_disponiveis.append(m.name)
+            
+            if modelos_disponiveis:
+                st.success(f"✅ {len(modelos_disponiveis)} Modelos encontrados!")
+                # Remove o prefixo 'models/' para ficar mais limpo na visualização
+                lista_limpa = [m.replace("models/", "") for m in modelos_disponiveis]
+                
+                # Tenta selecionar o Flash automaticamente, se não, pega o primeiro
+                index_padrao = 0
+                for i, nome in enumerate(lista_limpa):
+                    if "flash" in nome:
+                        index_padrao = i
+                        break
+                
+                modelo_selecionado_nome = st.selectbox("Selecione o Modelo:", lista_limpa, index=index_padrao)
+                modelo_escolhido = modelo_selecionado_nome # Salva a escolha
+            else:
+                st.error("Nenhum modelo disponível para esta chave.")
+        except Exception as e:
+            st.error(f"Erro na chave: {e}")
+            
     st.divider()
-    estilo_texto = st.selectbox("Estilo do Texto:", 
-        ["Didático e Simples", "Acadêmico", "Storytelling (História)", "Técnico Profissional"])
+    estilo = st.selectbox("Estilo:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
-# --- FUNÇÕES TÉCNICAS ---
+# --- FUNÇÕES ---
 class PDF(FPDF):
     def footer(self):
         self.set_y(-15)
@@ -42,179 +69,106 @@ class PDF(FPDF):
 
 def limpar_texto(texto):
     if not texto: return ""
-    # Remove formatações Markdown que estragam o PDF
     texto = texto.replace("**", "").replace("*", "").replace("##", "").replace("#", "")
     return re.sub(r'[^\x00-\x7FáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ0-9.,:;?!()"\'-]', '', texto)
 
-def baixar_imagem_capa(prompt_imagem):
-    prompt_formatado = prompt_imagem.replace(" ", "%20")
-    # Pollinations gera imagem sem precisar de chave
-    url = f"https://image.pollinations.ai/prompt/{prompt_formatado}?width=1080&height=1420&nologo=true&seed=42"
+def baixar_imagem(prompt):
+    url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1080&height=1420&nologo=true"
     try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return response.content
-    except:
-        return None
-    return None
+        r = requests.get(url, timeout=10)
+        return r.content if r.status_code == 200 else None
+    except: return None
 
-def gerar_pdf_final(plano, conteudo_completo, imagem_bytes):
+def gerar_pdf(plano, conteudo, img_bytes):
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     
-    # 1. CAPA
+    # Capa
     pdf.add_page()
-    if imagem_bytes:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
-            tmp_file.write(imagem_bytes)
-            tmp_path = tmp_file.name
-        try:
-            pdf.image(tmp_path, x=0, y=0, w=210, h=297)
+    if img_bytes:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+            f.write(img_bytes)
+            path = f.name
+        try: pdf.image(path, x=0, y=0, w=210, h=297)
         except: pass
-        try: os.remove(tmp_path)
+        try: os.remove(path)
         except: pass
 
     pdf.set_y(150)
     pdf.set_font("Helvetica", "B", 30)
-    pdf.set_fill_color(0, 0, 0) 
-    pdf.set_text_color(255, 255, 255)
+    pdf.set_fill_color(0,0,0)
+    pdf.set_text_color(255,255,255)
+    pdf.multi_cell(0, 15, limpar_texto(plano['titulo_livro']).upper(), align="C", fill=True)
     
-    titulo = limpar_texto(plano['titulo_livro']).upper()
-    pdf.multi_cell(0, 15, titulo, align="C", fill=True)
-    
-    pdf.set_y(260)
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"Autor IA: {limpar_texto(plano['autor_ficticio'])}", align="C", fill=True)
-
-    # 2. SUMÁRIO
-    pdf.add_page()
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Helvetica", "B", 20)
-    pdf.cell(0, 20, "SUMÁRIO", ln=True, align='C')
-    pdf.set_font("Helvetica", "", 12)
-    for cap in plano['estrutura']:
-        pdf.cell(0, 10, f"{cap['capitulo']}. {limpar_texto(cap['titulo'])}", ln=True)
-
-    # 3. CONTEÚDO
-    for capitulo in conteudo_completo:
+    # Conteúdo
+    for cap in conteudo:
         pdf.add_page()
+        pdf.set_text_color(0,0,0)
         pdf.set_font("Helvetica", "B", 22)
-        pdf.set_text_color(41, 128, 185)
-        pdf.multi_cell(0, 12, limpar_texto(capitulo['titulo']))
+        pdf.multi_cell(0, 10, limpar_texto(cap['titulo']))
         pdf.ln(5)
-        pdf.set_draw_color(200, 200, 200)
-        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-        pdf.ln(10)
         pdf.set_font("Helvetica", "", 12)
-        pdf.set_text_color(0, 0, 0)
-        pdf.multi_cell(0, 6, limpar_texto(capitulo['texto']))
+        pdf.multi_cell(0, 6, limpar_texto(cap['texto']))
         
     return pdf.output(dest="S").encode("latin-1")
 
-# --- LÓGICA PRINCIPAL ---
-tema = st.text_input("Tema do Livro:", placeholder="Ex: Guia de Sobrevivência na Selva")
-col1, col2 = st.columns(2)
-with col1:
-    paginas_alvo = st.slider("Meta de Páginas:", 10, 200, 30)
-with col2:
-    densidade = st.slider("Profundidade (1-5):", 1, 5, 4)
+# --- APP PRINCIPAL ---
+tema = st.text_input("Tema do Livro:")
+paginas = st.slider("Meta de Páginas:", 10, 200, 30)
 
-if st.button("🚀 INICIAR SISTEMA"):
-    if not api_key:
-        st.error("⚠️ Cole sua API Key na barra lateral!")
+if st.button("🚀 INICIAR"):
+    if not api_key or not modelo_escolhido:
+        st.error("Configure a chave e escolha o modelo na barra lateral!")
     elif not tema:
-        st.warning("⚠️ Digite um tema.")
+        st.warning("Digite o tema.")
     else:
-        # --- CÓDIGO ATUALIZADO PARA A NOVA BIBLIOTECA ---
         try:
-            client = genai.Client(api_key=api_key)
+            # Configura com o modelo ESCOLHIDO pelo usuário (Sem erro 404!)
+            model = genai.GenerativeModel(modelo_escolhido)
+            status = st.status("🏗️ Trabalhando...", expanded=True)
             
-            status = st.status("🏗️ Iniciando os motores...", expanded=True)
-            
-            # 1. PLANEJAMENTO
-            num_capitulos = int(paginas_alvo / 2.5) 
-            if num_capitulos < 4: num_capitulos = 4
-            
-            status.write(f"🧠 Planejando {num_capitulos} capítulos...")
+            # 1. Planejamento
+            caps = int(paginas / 2.5)
+            if caps < 4: caps = 4
+            status.write(f"🧠 Planejando {caps} capítulos usando {modelo_escolhido}...")
             
             prompt_plan = f"""
-            Crie a estrutura de um livro sobre: {tema}.
-            Meta: {paginas_alvo} páginas ({num_capitulos} capítulos).
-            Retorne APENAS JSON puro:
-            {{
-                "titulo_livro": "...",
-                "autor_ficticio": "...",
-                "prompt_imagem_capa": "...",
-                "estrutura": [
-                    {{"capitulo": 1, "titulo": "...", "descricao": "..."}}
-                ]
-            }}
+            Crie estrutura de livro sobre {tema}. Meta: {paginas} páginas.
+            Retorne APENAS JSON:
+            {{ "titulo_livro": "...", "autor_ficticio": "...", "prompt_imagem": "...", 
+               "estrutura": [ {{ "capitulo": 1, "titulo": "...", "descricao": "..." }} ] }}
             """
+            res = model.generate_content(prompt_plan)
+            plano = json.loads(res.text.replace("```json","").replace("```","").strip())
+            st.success(f"📖 {plano['titulo_livro']}")
             
-            # Usa o modelo Gemini 1.5 Flash (Gratuito e Rápido)
-            res_plan = client.models.generate_content(
-                model='gemini-1.5-flash', 
-                contents=prompt_plan,
-                config=types.GenerateContentConfig(response_mime_type="application/json")
-            )
+            # 2. Capa
+            img = baixar_imagem(plano.get('prompt_imagem', f"Cover {tema}"))
             
-            plano = json.loads(res_plan.text)
-            st.success(f"📘 {plano['titulo_livro']}")
-            
-            # 2. CAPA
-            status.write("🎨 Pintando a capa...")
-            img_bytes = baixar_imagem_capa(plano.get('prompt_imagem_capa', f"Book cover {tema}"))
-            
-            # 3. ESCRITA
+            # 3. Escrita
             conteudo = []
-            barra = status.progress(0)
-            total_caps = len(plano['estrutura'])
+            bar = status.progress(0)
+            total = len(plano['estrutura'])
             
             for i, cap in enumerate(plano['estrutura']):
-                status.write(f"✍️ Escrevendo Cap {cap['capitulo']}/{total_caps}...")
-                
-                prompt_text = f"""
-                Escreva o CAPÍTULO {cap['capitulo']}: '{cap['titulo']}' do livro '{plano['titulo_livro']}'.
-                Contexto: {cap['descricao']}
-                REGRAS:
-                - Texto LONGO (mínimo 1000 palavras).
-                - Estilo: {estilo_texto}.
-                - Apenas texto corrido, sem markdown complexo.
-                """
+                status.write(f"✍️ Escrevendo {cap['capitulo']}/{total}...")
+                prompt_text = f"Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Texto LONGO ({estilo})."
                 
                 try:
-                    res_text = client.models.generate_content(
-                        model='gemini-1.5-flash', 
-                        contents=prompt_text
-                    )
-                    conteudo.append({"titulo": cap['titulo'], "texto": res_text.text})
-                except Exception as e:
-                    time.sleep(2)
-                    try:
-                        res_text = client.models.generate_content(
-                            model='gemini-1.5-flash', 
-                            contents=prompt_text
-                        )
-                        conteudo.append({"titulo": cap['titulo'], "texto": res_text.text})
-                    except:
-                        conteudo.append({"titulo": cap['titulo'], "texto": "[Erro na geração]"})
-
-                barra.progress((i + 1) / total_caps)
+                    txt = model.generate_content(prompt_text).text
+                    conteudo.append({"titulo": cap['titulo'], "texto": txt})
+                except:
+                    conteudo.append({"titulo": cap['titulo'], "texto": "[Erro geração]"})
+                
+                bar.progress((i+1)/total)
                 time.sleep(1)
-
+                
             # 4. PDF
-            status.write("🖨️ Diagramando PDF...")
-            pdf_bytes = gerar_pdf_final(plano, conteudo, img_bytes)
+            status.write("🖨️ Gerando PDF...")
+            pdf_bytes = gerar_pdf(plano, conteudo, img)
             
-            status.update(label="✅ Finalizado!", state="complete", expanded=False)
-            st.balloons()
+            status.update(label="Concluído!", state="complete")
+            st.download_button("📥 Baixar PDF", pdf_bytes, "livro.pdf", "application/pdf")
             
-            st.download_button(
-                label="📥 BAIXAR LIVRO PDF",
-                data=pdf_bytes,
-                file_name=f"Livro_IA.pdf",
-                mime="application/pdf"
-            )
-
         except Exception as e:
             st.error(f"Erro: {e}")
