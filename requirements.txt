@@ -1,4 +1,4 @@
 streamlit
 openai
-markdown
-fpdf2
+fpdf
+requests
