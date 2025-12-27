@@ -9,53 +9,23 @@ import os
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Fábrica de Livros (Scanner)", page_icon="📡", layout="wide")
+st.set_page_config(page_title="Fábrica de Livros (Auto-Fix)", page_icon="🛠️", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #0066cc; color: white; height: 3em; }
-    .status-box { padding: 10px; border: 1px solid #ddd; border-radius: 5px; background: #f9f9f9; }
+    .stButton>button { width: 100%; background-color: #27ae60; color: white; height: 3.5em; border-radius: 8px; }
+    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #eef9f0; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("📡 Fábrica de Livros (Auto-Detector)")
-st.caption("Este sistema detecta automaticamente quais modelos sua chave pode acessar.")
+st.title("🛠️ Fábrica de Livros (Sistema Anti-Erro)")
+st.caption("Este sistema testa 5 modelos diferentes até achar um que funcione na sua conta.")
 
-# --- BARRA LATERAL INTELIGENTE ---
+# --- BARRA LATERAL ---
 with st.sidebar:
-    st.header("🔑 Acesso")
+    st.header("🔑 Configuração")
     api_key = st.text_input("Cole sua API Key do Google:", type="password")
-    
-    modelo_escolhido = None
-    
-    if api_key:
-        try:
-            genai.configure(api_key=api_key)
-            # O "Scanner": Lista apenas modelos que geram texto
-            modelos_disponiveis = []
-            for m in genai.list_models():
-                if 'generateContent' in m.supported_generation_methods:
-                    modelos_disponiveis.append(m.name)
-            
-            if modelos_disponiveis:
-                st.success(f"✅ {len(modelos_disponiveis)} Modelos encontrados!")
-                # Remove o prefixo 'models/' para ficar mais limpo na visualização
-                lista_limpa = [m.replace("models/", "") for m in modelos_disponiveis]
-                
-                # Tenta selecionar o Flash automaticamente, se não, pega o primeiro
-                index_padrao = 0
-                for i, nome in enumerate(lista_limpa):
-                    if "flash" in nome:
-                        index_padrao = i
-                        break
-                
-                modelo_selecionado_nome = st.selectbox("Selecione o Modelo:", lista_limpa, index=index_padrao)
-                modelo_escolhido = modelo_selecionado_nome # Salva a escolha
-            else:
-                st.error("Nenhum modelo disponível para esta chave.")
-        except Exception as e:
-            st.error(f"Erro na chave: {e}")
-            
+    st.markdown("[Criar Chave Grátis](https://aistudio.google.com/app/apikey)")
     st.divider()
     estilo = st.selectbox("Estilo:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
@@ -69,7 +39,6 @@ class PDF(FPDF):
 
 def limpar_texto(texto):
     if not texto: return ""
-    texto = texto.replace("**", "").replace("*", "").replace("##", "").replace("#", "")
     return re.sub(r'[^\x00-\x7FáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ0-9.,:;?!()"\'-]', '', texto)
 
 def baixar_imagem(prompt):
@@ -78,6 +47,32 @@ def baixar_imagem(prompt):
         r = requests.get(url, timeout=10)
         return r.content if r.status_code == 200 else None
     except: return None
+
+def encontrar_modelo_funcionando():
+    """Testa vários nomes de modelos até um funcionar"""
+    lista_tentativas = [
+        "gemini-1.5-flash", 
+        "gemini-1.5-flash-latest", 
+        "gemini-1.5-flash-001",
+        "gemini-pro",
+        "gemini-1.0-pro"
+    ]
+    
+    status_check = st.empty()
+    
+    for nome_modelo in lista_tentativas:
+        try:
+            status_check.text(f"Testando conexão com: {nome_modelo}...")
+            model = genai.GenerativeModel(nome_modelo)
+            # Teste rápido
+            model.generate_content("Oi")
+            status_check.empty()
+            return model, nome_modelo
+        except:
+            continue
+            
+    status_check.empty()
+    return None, None
 
 def gerar_pdf(plano, conteudo, img_bytes):
     pdf = PDF()
@@ -99,6 +94,9 @@ def gerar_pdf(plano, conteudo, img_bytes):
     pdf.set_fill_color(0,0,0)
     pdf.set_text_color(255,255,255)
     pdf.multi_cell(0, 15, limpar_texto(plano['titulo_livro']).upper(), align="C", fill=True)
+    pdf.set_y(260)
+    pdf.set_font("Helvetica", "B", 14)
+    pdf.cell(0, 10, f"Autor: {limpar_texto(plano['autor_ficticio'])}", align="C", fill=True)
     
     # Conteúdo
     for cap in conteudo:
@@ -117,58 +115,74 @@ tema = st.text_input("Tema do Livro:")
 paginas = st.slider("Meta de Páginas:", 10, 200, 30)
 
 if st.button("🚀 INICIAR"):
-    if not api_key or not modelo_escolhido:
-        st.error("Configure a chave e escolha o modelo na barra lateral!")
+    if not api_key:
+        st.error("Cole a API Key na barra lateral!")
     elif not tema:
         st.warning("Digite o tema.")
     else:
-        try:
-            # Configura com o modelo ESCOLHIDO pelo usuário (Sem erro 404!)
-            model = genai.GenerativeModel(modelo_escolhido)
-            status = st.status("🏗️ Trabalhando...", expanded=True)
+        # Configura a chave
+        genai.configure(api_key=api_key)
+        
+        # --- AQUI ESTÁ A MÁGICA: AUTO-DETECÇÃO ---
+        model, nome_ok = encontrar_modelo_funcionando()
+        
+        if not model:
+            st.error("❌ Erro Fatal: Nenhum modelo funcionou com essa chave. Verifique se a chave foi criada num 'Novo Projeto' no Google AI Studio.")
+        else:
+            status = st.status(f"✅ Conectado no modelo: {nome_ok}", expanded=True)
             
-            # 1. Planejamento
-            caps = int(paginas / 2.5)
-            if caps < 4: caps = 4
-            status.write(f"🧠 Planejando {caps} capítulos usando {modelo_escolhido}...")
-            
-            prompt_plan = f"""
-            Crie estrutura de livro sobre {tema}. Meta: {paginas} páginas.
-            Retorne APENAS JSON:
-            {{ "titulo_livro": "...", "autor_ficticio": "...", "prompt_imagem": "...", 
-               "estrutura": [ {{ "capitulo": 1, "titulo": "...", "descricao": "..." }} ] }}
-            """
-            res = model.generate_content(prompt_plan)
-            plano = json.loads(res.text.replace("```json","").replace("```","").strip())
-            st.success(f"📖 {plano['titulo_livro']}")
-            
-            # 2. Capa
-            img = baixar_imagem(plano.get('prompt_imagem', f"Cover {tema}"))
-            
-            # 3. Escrita
-            conteudo = []
-            bar = status.progress(0)
-            total = len(plano['estrutura'])
-            
-            for i, cap in enumerate(plano['estrutura']):
-                status.write(f"✍️ Escrevendo {cap['capitulo']}/{total}...")
-                prompt_text = f"Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Texto LONGO ({estilo})."
+            try:
+                # 1. Planejamento
+                caps = int(paginas / 2.5)
+                if caps < 4: caps = 4
+                status.write(f"🧠 Planejando {caps} capítulos...")
                 
-                try:
-                    txt = model.generate_content(prompt_text).text
-                    conteudo.append({"titulo": cap['titulo'], "texto": txt})
-                except:
-                    conteudo.append({"titulo": cap['titulo'], "texto": "[Erro geração]"})
+                prompt_plan = f"""
+                Crie estrutura de livro sobre {tema}. Meta: {paginas} páginas.
+                Retorne APENAS JSON:
+                {{ "titulo_livro": "...", "autor_ficticio": "...", "prompt_imagem": "...", 
+                   "estrutura": [ {{ "capitulo": 1, "titulo": "...", "descricao": "..." }} ] }}
+                """
+                res = model.generate_content(prompt_plan)
+                plano = json.loads(res.text.replace("```json","").replace("```","").strip())
+                st.success(f"📖 Título: {plano['titulo_livro']}")
                 
-                bar.progress((i+1)/total)
-                time.sleep(1)
+                # 2. Capa
+                status.write("🎨 Gerando capa...")
+                img = baixar_imagem(plano.get('prompt_imagem', f"Cover {tema}"))
                 
-            # 4. PDF
-            status.write("🖨️ Gerando PDF...")
-            pdf_bytes = gerar_pdf(plano, conteudo, img)
-            
-            status.update(label="Concluído!", state="complete")
-            st.download_button("📥 Baixar PDF", pdf_bytes, "livro.pdf", "application/pdf")
-            
-        except Exception as e:
-            st.error(f"Erro: {e}")
+                # 3. Escrita
+                conteudo = []
+                bar = status.progress(0)
+                total = len(plano['estrutura'])
+                
+                for i, cap in enumerate(plano['estrutura']):
+                    status.write(f"✍️ Escrevendo {cap['capitulo']}/{total}: {cap['titulo']}...")
+                    prompt_text = f"Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Texto LONGO e detalhado ({estilo})."
+                    
+                    try:
+                        # Tenta gerar
+                        txt = model.generate_content(prompt_text).text
+                        conteudo.append({"titulo": cap['titulo'], "texto": txt})
+                    except:
+                        # Se falhar, espera 2s e tenta de novo
+                        time.sleep(2)
+                        try:
+                            txt = model.generate_content(prompt_text).text
+                            conteudo.append({"titulo": cap['titulo'], "texto": txt})
+                        except:
+                            conteudo.append({"titulo": cap['titulo'], "texto": "[Erro na geração deste capítulo]"})
+                    
+                    bar.progress((i+1)/total)
+                    time.sleep(1)
+                    
+                # 4. PDF
+                status.write("🖨️ Finalizando PDF...")
+                pdf_bytes = gerar_pdf(plano, conteudo, img)
+                
+                status.update(label="Sucesso! Baixe abaixo.", state="complete")
+                st.balloons()
+                st.download_button("📥 Baixar Livro PDF", pdf_bytes, "livro_ia.pdf", "application/pdf")
+                
+            except Exception as e:
+                st.error(f"Erro durante a criação: {e}")
