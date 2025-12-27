@@ -1,5 +1,4 @@
 import streamlit as st
-import google.generativeai as genai
 import json
 import re
 import requests
@@ -9,27 +8,54 @@ import os
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Fábrica de Livros (Auto-Fix)", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Fábrica de Livros (Modo Web)", page_icon="🌐", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #27ae60; color: white; height: 3.5em; border-radius: 8px; }
-    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #eef9f0; margin-bottom: 20px; }
+    .stButton>button { width: 100%; background-color: #7d5fff; color: white; height: 3.5em; border-radius: 8px; }
+    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #f3f0ff; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛠️ Fábrica de Livros (Sistema Anti-Erro)")
-st.caption("Este sistema testa 5 modelos diferentes até achar um que funcione na sua conta.")
+st.title("🌐 Fábrica de Livros (Conexão Direta)")
+st.caption("Este sistema ignora bibliotecas e conecta direto no servidor do Google.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.header("🔑 Configuração")
-    api_key = st.text_input("Cole sua API Key do Google:", type="password")
-    st.markdown("[Criar Chave Grátis](https://aistudio.google.com/app/apikey)")
+    st.header("🔑 Acesso")
+    api_key = st.text_input("Sua API Key do Google:", type="password")
+    st.markdown("[Criar Chave](https://aistudio.google.com/app/apikey)")
     st.divider()
     estilo = st.selectbox("Estilo:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
-# --- FUNÇÕES ---
+# --- FUNÇÃO MÁGICA (CONEXÃO DIRETA) ---
+def chamar_gemini(prompt, chave):
+    """Manda mensagem pro Google sem usar biblioteca"""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={chave}"
+    
+    headers = {"Content-Type": "application/json"}
+    data = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=30)
+        
+        if response.status_code != 200:
+            return f"ERRO: {response.text}"
+            
+        resultado = response.json()
+        try:
+            return resultado['candidates'][0]['content']['parts'][0]['text']
+        except:
+            return "Erro ao ler resposta do Google."
+            
+    except Exception as e:
+        return f"Erro de conexão: {e}"
+
+# --- FUNÇÕES PDF ---
 class PDF(FPDF):
     def footer(self):
         self.set_y(-15)
@@ -47,32 +73,6 @@ def baixar_imagem(prompt):
         r = requests.get(url, timeout=10)
         return r.content if r.status_code == 200 else None
     except: return None
-
-def encontrar_modelo_funcionando():
-    """Testa vários nomes de modelos até um funcionar"""
-    lista_tentativas = [
-        "gemini-1.5-flash", 
-        "gemini-1.5-flash-latest", 
-        "gemini-1.5-flash-001",
-        "gemini-pro",
-        "gemini-1.0-pro"
-    ]
-    
-    status_check = st.empty()
-    
-    for nome_modelo in lista_tentativas:
-        try:
-            status_check.text(f"Testando conexão com: {nome_modelo}...")
-            model = genai.GenerativeModel(nome_modelo)
-            # Teste rápido
-            model.generate_content("Oi")
-            status_check.empty()
-            return model, nome_modelo
-        except:
-            continue
-            
-    status_check.empty()
-    return None, None
 
 def gerar_pdf(plano, conteudo, img_bytes):
     pdf = PDF()
@@ -93,10 +93,9 @@ def gerar_pdf(plano, conteudo, img_bytes):
     pdf.set_font("Helvetica", "B", 30)
     pdf.set_fill_color(0,0,0)
     pdf.set_text_color(255,255,255)
-    pdf.multi_cell(0, 15, limpar_texto(plano['titulo_livro']).upper(), align="C", fill=True)
-    pdf.set_y(260)
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, f"Autor: {limpar_texto(plano['autor_ficticio'])}", align="C", fill=True)
+    
+    titulo = limpar_texto(plano.get('titulo_livro', 'Título')).upper()
+    pdf.multi_cell(0, 15, titulo, align="C", fill=True)
     
     # Conteúdo
     for cap in conteudo:
@@ -110,26 +109,24 @@ def gerar_pdf(plano, conteudo, img_bytes):
         
     return pdf.output(dest="S").encode("latin-1")
 
-# --- APP PRINCIPAL ---
+# --- APP ---
 tema = st.text_input("Tema do Livro:")
 paginas = st.slider("Meta de Páginas:", 10, 200, 30)
 
-if st.button("🚀 INICIAR"):
+if st.button("🚀 INICIAR (MODO DIRETO)"):
     if not api_key:
-        st.error("Cole a API Key na barra lateral!")
+        st.error("Cole a API Key!")
     elif not tema:
         st.warning("Digite o tema.")
     else:
-        # Configura a chave
-        genai.configure(api_key=api_key)
+        # Teste Rápido da Chave
+        teste = chamar_gemini("Diga OI", api_key)
         
-        # --- AQUI ESTÁ A MÁGICA: AUTO-DETECÇÃO ---
-        model, nome_ok = encontrar_modelo_funcionando()
-        
-        if not model:
-            st.error("❌ Erro Fatal: Nenhum modelo funcionou com essa chave. Verifique se a chave foi criada num 'Novo Projeto' no Google AI Studio.")
+        if "ERRO" in teste:
+            st.error(f"❌ A Chave foi rejeitada pelo Google. Detalhes: {teste}")
+            st.info("Dica: Verifique se copiou a chave inteira, sem espaços no final.")
         else:
-            status = st.status(f"✅ Conectado no modelo: {nome_ok}", expanded=True)
+            status = st.status("✅ Chave Aceita! Conectado.", expanded=True)
             
             try:
                 # 1. Planejamento
@@ -138,18 +135,25 @@ if st.button("🚀 INICIAR"):
                 status.write(f"🧠 Planejando {caps} capítulos...")
                 
                 prompt_plan = f"""
-                Crie estrutura de livro sobre {tema}. Meta: {paginas} páginas.
-                Retorne APENAS JSON:
+                Crie estrutura JSON para livro sobre {tema}. {paginas} paginas.
+                JSON OBRIGATORIO:
                 {{ "titulo_livro": "...", "autor_ficticio": "...", "prompt_imagem": "...", 
                    "estrutura": [ {{ "capitulo": 1, "titulo": "...", "descricao": "..." }} ] }}
                 """
-                res = model.generate_content(prompt_plan)
-                plano = json.loads(res.text.replace("```json","").replace("```","").strip())
-                st.success(f"📖 Título: {plano['titulo_livro']}")
+                
+                res_txt = chamar_gemini(prompt_plan, api_key)
+                # Limpeza bruta do JSON
+                json_str = res_txt.replace("```json", "").replace("```", "").strip()
+                # Às vezes o google coloca texto antes, pega só o { ... }
+                start = json_str.find('{')
+                end = json_str.rfind('}') + 1
+                plano = json.loads(json_str[start:end])
+                
+                st.success(f"📘 {plano['titulo_livro']}")
                 
                 # 2. Capa
                 status.write("🎨 Gerando capa...")
-                img = baixar_imagem(plano.get('prompt_imagem', f"Cover {tema}"))
+                img = baixar_imagem(plano.get('prompt_imagem', tema))
                 
                 # 3. Escrita
                 conteudo = []
@@ -157,32 +161,29 @@ if st.button("🚀 INICIAR"):
                 total = len(plano['estrutura'])
                 
                 for i, cap in enumerate(plano['estrutura']):
-                    status.write(f"✍️ Escrevendo {cap['capitulo']}/{total}: {cap['titulo']}...")
-                    prompt_text = f"Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Texto LONGO e detalhado ({estilo})."
+                    status.write(f"✍️ Cap {cap['capitulo']}/{total}: {cap['titulo']}...")
                     
-                    try:
-                        # Tenta gerar
-                        txt = model.generate_content(prompt_text).text
+                    prompt_texto = f"""
+                    Escreva o capitulo '{cap['titulo']}' do livro '{plano['titulo_livro']}'.
+                    Contexto: {cap['descricao']}.
+                    IMPORTANTE: Texto LONGO (1000 palavras), estilo {estilo}. Sem markdown.
+                    """
+                    
+                    txt = chamar_gemini(prompt_texto, api_key)
+                    
+                    if "ERRO" in txt:
+                        conteudo.append({"titulo": cap['titulo'], "texto": "[Erro na conexão]"})
+                    else:
                         conteudo.append({"titulo": cap['titulo'], "texto": txt})
-                    except:
-                        # Se falhar, espera 2s e tenta de novo
-                        time.sleep(2)
-                        try:
-                            txt = model.generate_content(prompt_text).text
-                            conteudo.append({"titulo": cap['titulo'], "texto": txt})
-                        except:
-                            conteudo.append({"titulo": cap['titulo'], "texto": "[Erro na geração deste capítulo]"})
                     
                     bar.progress((i+1)/total)
-                    time.sleep(1)
                     
                 # 4. PDF
-                status.write("🖨️ Finalizando PDF...")
+                status.write("🖨️ Gerando PDF...")
                 pdf_bytes = gerar_pdf(plano, conteudo, img)
                 
-                status.update(label="Sucesso! Baixe abaixo.", state="complete")
-                st.balloons()
-                st.download_button("📥 Baixar Livro PDF", pdf_bytes, "livro_ia.pdf", "application/pdf")
+                status.update(label="Pronto!", state="complete")
+                st.download_button("📥 Baixar PDF", pdf_bytes, "livro_final.pdf", "application/pdf")
                 
             except Exception as e:
-                st.error(f"Erro durante a criação: {e}")
+                st.error(f"Erro no processamento: {e}")
