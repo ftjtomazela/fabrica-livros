@@ -42,17 +42,14 @@ def detectar_modelo_disponivel(chave):
         
         # Procura um modelo que gere texto
         if 'models' in dados:
+            # 1. Tenta achar o FLASH (mais rápido)
             for m in dados['models']:
-                nome = m['name'] # Ex: models/gemini-pro
+                nome = m['name'] 
                 metodos = m.get('supportedGenerationMethods', [])
-                
-                # Se o modelo sabe gerar conteúdo, usamos ele!
-                if 'generateContent' in metodos:
-                    # Preferência pelo Flash (mais rápido), mas aceita qualquer um
-                    if 'flash' in nome:
-                        return nome, None
+                if 'generateContent' in metodos and 'flash' in nome:
+                    return nome, None # Achou o Flash!
             
-            # Se não achou Flash, pega o primeiro que serve (ex: gemini-pro)
+            # 2. Se não achar, pega o PRO ou qualquer outro
             for m in dados['models']:
                 if 'generateContent' in m.get('supportedGenerationMethods', []):
                     return m['name'], None
@@ -64,7 +61,7 @@ def detectar_modelo_disponivel(chave):
 
 # --- FUNÇÃO 2: O ESCRITOR (Usa o modelo descoberto) ---
 def chamar_gemini(prompt, chave, nome_modelo):
-    # O nome_modelo já vem completo, ex: models/gemini-pro
+    # O nome_modelo já vem completo do detetive
     url = f"https://generativelanguage.googleapis.com/v1beta/{nome_modelo}:generateContent?key={chave}"
     
     headers = {"Content-Type": "application/json"}
@@ -72,6 +69,7 @@ def chamar_gemini(prompt, chave, nome_modelo):
     
     try:
         response = requests.post(url, headers=headers, json=data, timeout=60)
+        
         if response.status_code != 200:
             return f"ERRO GOOGLE: {response.text}"
         
@@ -80,6 +78,7 @@ def chamar_gemini(prompt, chave, nome_modelo):
             return resultado['candidates'][0]['content']['parts'][0]['text']
         except:
             return "O Google bloqueou a resposta (Conteúdo inseguro)."
+            
     except Exception as e:
         return f"ERRO CONEXÃO: {e}"
 
@@ -155,12 +154,8 @@ if st.button("🚀 INICIAR (AUTO-DETECT)"):
     else:
         status = st.status("🕵️ Detectando qual modelo sua chave aceita...", expanded=True)
         
-        # 1. DETECÇÃO AUTOMÁTICA
-        nome_modelo, erro = detecting_modelo_disponivel(api_key)
-        
-        # Correção rápida se a função acima falhou por typo na minha escrita anterior, 
-        # chamei de detectar_modelo_disponivel na definição
-        nome_modelo, erro = detectar_modelo_disponivel(api_key)
+        # 1. DETECÇÃO AUTOMÁTICA (Aqui estava o erro, agora corrigido!)
+        nome_modelo, erro = detecting_modelo_disponivel(api_key) if 'detecting_modelo_disponivel' in globals() else detectar_modelo_disponivel(api_key)
 
         if not nome_modelo:
             status.update(label="❌ Falha na Chave", state="error")
