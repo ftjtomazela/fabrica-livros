@@ -8,46 +8,65 @@ import os
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Fábrica V8 (Seletor Manual)", page_icon="🎛️", layout="wide")
+st.set_page_config(page_title="Fábrica V9 (Menu Dinâmico)", page_icon="🧬", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #4b4b4b; color: white; height: 3.5em; border-radius: 8px; }
-    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #f0f0f0; margin-bottom: 20px; }
+    .stButton>button { width: 100%; background-color: #574b90; color: white; height: 3.5em; border-radius: 8px; }
+    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #fdfdfd; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎛️ Fábrica V8 (Controle Total)")
-st.info("Erro 429? Basta trocar o modelo na barra lateral e tentar de novo.")
+st.title("🧬 Fábrica V9 (Lista Real)")
+st.info("Este sistema baixa a lista de modelos da SUA conta. Selecione um na lateral.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.header("🔑 Configurações")
+    st.header("🔑 Configuração")
     api_key = st.text_input("Sua API Key:", type="password")
-    st.markdown("[Criar Nova Chave (Se travar)](https://aistudio.google.com/app/apikey)")
     
-    st.divider()
+    modelo_escolhido = None
     
-    # --- SELETOR MANUAL DE MODELOS ---
-    # Aqui forçamos os modelos estáveis do Google, fugindo dos experimentais limitados
-    modelos_seguros = [
-        "gemini-1.5-flash",       # O mais equilibrado
-        "gemini-1.5-flash-8b",    # O mais rápido e econômico
-        "gemini-1.5-pro",         # O mais inteligente (mas mais lento)
-        "gemini-1.0-pro"          # O clássico (reserva)
-    ]
-    modelo_escolhido = st.selectbox("Escolha o Modelo:", modelos_seguros)
-    
+    # --- LÓGICA DO MENU DINÂMICO ---
+    if api_key:
+        try:
+            # Pergunta pro Google: "O que eu posso usar?"
+            url_list = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            resp = requests.get(url_list, timeout=10)
+            
+            if resp.status_code == 200:
+                dados = resp.json()
+                # Filtra só os que geram texto
+                lista_modelos = []
+                if 'models' in dados:
+                    for m in dados['models']:
+                        if 'generateContent' in m.get('supportedGenerationMethods', []):
+                            # Salva o nome exato (ex: models/gemini-1.5-flash)
+                            lista_modelos.append(m['name'])
+                
+                if lista_modelos:
+                    st.success(f"{len(lista_modelos)} modelos disponíveis!")
+                    # O usuário escolhe um da lista REAL
+                    modelo_escolhido = st.selectbox("Selecione o Modelo:", lista_modelos)
+                else:
+                    st.error("Sua chave não tem acesso a modelos de texto.")
+            else:
+                st.error(f"Erro na chave: {resp.status_code}")
+        except Exception as e:
+            st.error(f"Erro de conexão: {e}")
+
     st.divider()
     estilo = st.selectbox("Estilo:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
 # --- FUNÇÃO CHAMADA API ---
-def chamar_gemini(prompt, chave, nome_modelo):
-    # Usa o modelo que você escolheu na caixa
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{nome_modelo}:generateContent?key={chave}"
+def chamar_gemini(prompt, chave, nome_modelo_completo):
+    # O nome já vem com 'models/' do menu, então usamos direto
+    # Ex: https://.../v1beta/models/gemini-pro:generateContent
+    url = f"https://generativelanguage.googleapis.com/v1beta/{nome_modelo_completo}:generateContent?key={chave}"
+    
     headers = {"Content-Type": "application/json"}
     
-    # Filtros de segurança no mínimo para evitar bloqueio de "Tráfego Pago"
+    # Configuração de Segurança Mínima
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
@@ -63,9 +82,9 @@ def chamar_gemini(prompt, chave, nome_modelo):
     try:
         response = requests.post(url, headers=headers, json=data, timeout=60)
         
-        # Se der erro 429 (Cota), retornamos uma mensagem específica
+        # Tratamento de Erro de Cota (429)
         if response.status_code == 429:
-            return "ERRO 429: Cota excedida. Troque o modelo na barra lateral!"
+            return "ERRO 429"
             
         if response.status_code != 200:
             return f"ERRO API ({response.status_code}): {response.text}"
@@ -73,31 +92,35 @@ def chamar_gemini(prompt, chave, nome_modelo):
         resultado = response.json()
         
         if 'promptFeedback' in resultado and 'blockReason' in resultado['promptFeedback']:
-            return f"BLOQUEIO: Tema sensível detectado ({resultado['promptFeedback']['blockReason']})."
+            return f"BLOQUEIO: {resultado['promptFeedback']['blockReason']}"
             
         try:
             return resultado['candidates'][0]['content']['parts'][0]['text']
         except KeyError:
-            return "ERRO: Resposta vazia."
+            return "ERRO: Resposta vazia do Google."
             
     except Exception as e:
         return f"ERRO CONEXÃO: {e}"
 
 # --- FUNÇÃO RETRY ---
 def tentar_gerar(prompt, chave, modelo):
-    # Tenta 2 vezes. Se der erro 429, desiste logo para você trocar o modelo.
-    for i in range(2):
+    # Tenta 3 vezes
+    for i in range(3):
         res = chamar_gemini(prompt, chave, modelo)
         
-        if "ERRO 429" in res:
-            return res # Retorna o erro imediatamente para o usuário ver
+        if res == "ERRO 429":
+            time.sleep(10) # Se for cota, espera mais
+            continue
             
         if "ERRO" not in res and "BLOQUEIO" not in res:
             return res
         
-        time.sleep(5) # Espera 5s antes de tentar de novo
+        time.sleep(3)
     
-    return res # Retorna o último erro
+    if res == "ERRO 429":
+        return "COTA_ESTOURADA"
+        
+    return res # Retorna o erro final
 
 # --- FUNÇÕES VISUAIS ---
 class PDF(FPDF):
@@ -167,7 +190,7 @@ def gerar_pdf(plano, conteudo, img_capa_bytes):
         pdf.set_font("Helvetica", "", 12)
         
         texto_pag = cap['texto']
-        if "ERRO" in texto_pag:
+        if "ERRO" in texto_pag or "COTA" in texto_pag:
              pdf.set_text_color(255, 0, 0)
         else:
              pdf.set_text_color(0, 0, 0)
@@ -180,11 +203,12 @@ def gerar_pdf(plano, conteudo, img_capa_bytes):
 tema = st.text_input("Tema do Livro:", placeholder="Ex: Tráfego Pago")
 paginas = st.slider("Páginas:", 10, 200, 30)
 
-if st.button("🚀 INICIAR V8"):
+if st.button("🚀 INICIAR V9"):
     if not api_key: st.error("Falta API Key")
     elif not tema: st.warning("Falta Tema")
+    elif not modelo_escolhido: st.error("Aguarde a lista de modelos carregar na lateral!")
     else:
-        status = st.status(f"Conectando ao modelo {modelo_escolhido}...", expanded=True)
+        status = st.status(f"Usando {modelo_escolhido}...", expanded=True)
         
         try:
             # 1. Planejamento
@@ -193,7 +217,7 @@ if st.button("🚀 INICIAR V8"):
             status.write(f"🧠 Planejando {caps} capítulos...")
             
             prompt_plan = f"""
-            Atue como professor. Crie plano de livro EDUCACIONAL sobre: {tema}.
+            Atue como professor universitário. Crie plano de curso/livro sobre: {tema}.
             Meta: {paginas} paginas.
             JSON OBRIGATÓRIO:
             {{
@@ -208,16 +232,15 @@ if st.button("🚀 INICIAR V8"):
             
             res = tentar_gerar(prompt_plan, api_key, modelo_escolhido)
             
-            if "ERRO 429" in res:
-                status.update(label="Cota Excedida", state="error")
-                st.error(f"🛑 O modelo {modelo_escolhido} está cheio por hoje. Mude para outro na barra lateral (ex: flash-8b) e tente de novo!")
+            if res == "COTA_ESTOURADA":
+                st.error(f"🛑 Cota do modelo {modelo_escolhido} acabou! Selecione OUTRO na lateral.")
                 st.stop()
-                
+            
             if "ERRO" in res: raise Exception(res)
             
             # Extração JSON
             json_match = re.search(r'\{.*\}', res, re.DOTALL)
-            if not json_match: raise Exception("JSON inválido recebido.")
+            if not json_match: raise Exception("JSON inválido.")
             plano = json.loads(json_match.group(0))
             
             st.success(f"📘 {plano['titulo_livro']}")
@@ -242,10 +265,9 @@ if st.button("🚀 INICIAR V8"):
                 
                 txt = tentar_gerar(prompt, api_key, modelo_escolhido)
                 
-                # Se der erro 429 no meio do livro, avisa para trocar
-                if "ERRO 429" in txt:
-                    st.warning("⚠️ Cota acabou no meio do livro. O PDF será gerado até aqui.")
-                    conteudo.append({"titulo": cap['titulo'], "texto": "ERRO: Cota excedida. Gere o restante em outro modelo.", "imagem_bytes": None})
+                if txt == "COTA_ESTOURADA":
+                    st.warning("⚠️ Cota acabou no meio. O PDF será gerado até aqui.")
+                    conteudo.append({"titulo": cap['titulo'], "texto": "ERRO: Cota acabou. Tente outro modelo.", "imagem_bytes": None})
                     break
                 
                 status.write(f"🖼️ Ilustração {cap['capitulo']}...")
@@ -259,7 +281,7 @@ if st.button("🚀 INICIAR V8"):
             status.write("🖨️ PDF...")
             pdf = gerar_pdf(plano, conteudo, img_capa)
             status.update(label="Pronto!", state="complete")
-            st.download_button("📥 Baixar PDF V8", pdf, "livro_v8.pdf", "application/pdf")
+            st.download_button("📥 Baixar PDF V9", pdf, "livro_v9.pdf", "application/pdf")
             
         except Exception as e:
             st.error(f"Erro: {e}")
