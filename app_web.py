@@ -8,17 +8,17 @@ import os
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Fábrica de Livros (Com Imagens)", page_icon="🎨", layout="wide")
+st.set_page_config(page_title="Fábrica de Livros (Anti-Falha)", page_icon="🛡️", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #FF4B4B; color: white; height: 3.5em; border-radius: 8px; }
-    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #fff5f5; margin-bottom: 20px; }
+    .stButton>button { width: 100%; background-color: #27ae60; color: white; height: 3.5em; border-radius: 8px; }
+    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #e8f5e9; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎨 Fábrica de Livros (Edição Ilustrada)")
-st.info("Este sistema gera uma capa E uma imagem ilustrativa para cada capítulo.")
+st.title("🛡️ Fábrica de Livros (Sistema de Persistência)")
+st.info("Este sistema tenta gerar cada capítulo até 3 vezes caso ocorra erro de conexão.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
@@ -28,59 +28,58 @@ with st.sidebar:
     st.divider()
     estilo = st.selectbox("Estilo do Texto:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
-# --- FUNÇÃO 1: O DETETIVE (Descobre o nome do modelo) ---
+# --- FUNÇÃO 1: O DETETIVE ---
 def detectar_modelo_disponivel(chave):
-    """Pergunta ao Google quais modelos existem para essa chave"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={chave}"
-    
     try:
         response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None, f"Erro ao listar modelos: {response.text}"
-            
+        if response.status_code != 200: return None, response.text
         dados = response.json()
-        
         if 'models' in dados:
-            # 1. Tenta achar o FLASH (mais rápido)
             for m in dados['models']:
-                nome = m['name'] 
-                metodos = m.get('supportedGenerationMethods', [])
-                if 'generateContent' in metodos and 'flash' in nome:
-                    return nome, None # Achou o Flash!
-            
-            # 2. Se não achar, pega qualquer um que gere texto
+                if 'generateContent' in m.get('supportedGenerationMethods', []) and 'flash' in m['name']:
+                    return m['name'], None
             for m in dados['models']:
                 if 'generateContent' in m.get('supportedGenerationMethods', []):
                     return m['name'], None
-                    
-        return None, "Nenhum modelo de texto encontrado nessa chave."
-        
-    except Exception as e:
-        return None, f"Erro de conexão: {e}"
+        return None, "Nenhum modelo encontrado."
+    except Exception as e: return None, str(e)
 
-# --- FUNÇÃO 2: O ESCRITOR (Usa o modelo descoberto) ---
+# --- FUNÇÃO 2: O ESCRITOR (Direto via HTTP) ---
 def chamar_gemini(prompt, chave, nome_modelo):
     url = f"https://generativelanguage.googleapis.com/v1beta/{nome_modelo}:generateContent?key={chave}"
-    
     headers = {"Content-Type": "application/json"}
     data = { "contents": [{ "parts": [{"text": prompt}] }] }
     
     try:
         response = requests.post(url, headers=headers, json=data, timeout=60)
-        
-        if response.status_code != 200:
-            return f"ERRO GOOGLE: {response.text}"
+        if response.status_code != 200: return f"ERRO API: {response.status_code}"
         
         resultado = response.json()
         try:
             return resultado['candidates'][0]['content']['parts'][0]['text']
-        except:
-            return "O Google bloqueou a resposta (Conteúdo inseguro)."
-            
+        except KeyError:
+            # As vezes o Google bloqueia por segurança (Safety Filter) e não retorna texto
+            return "ERRO: Conteúdo bloqueado pelo filtro de segurança do Google."
     except Exception as e:
         return f"ERRO CONEXÃO: {e}"
 
-# --- FUNÇÕES PDF E IMAGEM ---
+# --- NOVA FUNÇÃO: A TEIMOSIA (RETRY) ---
+def tentar_gerar_com_retry(prompt, chave, modelo, tentativas=3):
+    """Tenta gerar o texto. Se falhar, espera e tenta de novo."""
+    for i in range(tentativas):
+        texto = chamar_gemini(prompt, chave, modelo)
+        
+        if "ERRO" not in texto:
+            return texto # Sucesso!
+        
+        # Se deu erro, espera um pouco (Backoff exponencial)
+        tempo_espera = (i + 1) * 3 # Espera 3s, depois 6s, depois 9s...
+        time.sleep(tempo_espera)
+    
+    return "[ERRO PERSISTENTE] O Google rejeitou este capítulo 3 vezes. Provável sobrecarga ou filtro de segurança."
+
+# --- FUNÇÕES VISUAIS ---
 class PDF(FPDF):
     def footer(self):
         self.set_y(-15)
@@ -93,70 +92,58 @@ def limpar_texto(texto):
     return re.sub(r'[^\x00-\x7FáéíóúàèìòùâêîôûãõçÁÉÍÓÚÀÈÌÒÙÂÊÎÔÛÃÕÇ0-9.,:;?!()"\'-]', '', texto)
 
 def baixar_imagem(prompt):
-    # Usa Pollinations, adiciona 'seed' para variar as imagens
     seed = int(time.time() * 1000) % 1000
+    # Adicionando timestamp para evitar cache
     url = f"https://image.pollinations.ai/prompt/{prompt.replace(' ', '%20')}?width=1024&height=768&nologo=true&seed={seed}"
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=20)
         return r.content if r.status_code == 200 else None
     except: return None
 
-# --- FUNÇÃO DE DIAGRAMAÇÃO (ATUALIZADA PARA IMAGENS INTERNAS) ---
 def gerar_pdf(plano, conteudo, img_capa_bytes):
     pdf = PDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     
-    # --- 1. CAPA ---
+    # Capa
     pdf.add_page()
     if img_capa_bytes:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
             f.write(img_capa_bytes)
-            path_capa = f.name
-        try: pdf.image(path_capa, x=0, y=0, w=210, h=297)
+            path = f.name
+        try: pdf.image(path, x=0, y=0, w=210, h=297)
         except: pass
-        try: os.remove(path_capa)
+        try: os.remove(path)
         except: pass
 
     pdf.set_y(150)
     pdf.set_font("Helvetica", "B", 30)
     pdf.set_fill_color(0,0,0)
     pdf.set_text_color(255,255,255)
-    
-    titulo = limpar_texto(plano.get('titulo_livro', 'Título')).upper()
-    pdf.multi_cell(0, 15, titulo, align="C", fill=True)
-    
+    pdf.multi_cell(0, 15, limpar_texto(plano.get('titulo_livro', 'Titulo')).upper(), align="C", fill=True)
     pdf.set_y(260)
     pdf.set_font("Helvetica", "B", 14)
     pdf.cell(0, 10, f"Autor: {limpar_texto(plano.get('autor_ficticio', 'IA'))}", align="C", fill=True)
     
-    # --- 2. CONTEÚDO DOS CAPÍTULOS ---
+    # Conteúdo
     for cap in conteudo:
         pdf.add_page()
-        
-        # Título do Capítulo
         pdf.set_text_color(0,0,0)
         pdf.set_font("Helvetica", "B", 22)
         pdf.multi_cell(0, 10, limpar_texto(cap['titulo']))
         pdf.ln(5)
         
-        # --- INSERIR IMAGEM DO CAPÍTULO AQUI ---
-        img_chap_bytes = cap.get('imagem_bytes')
-        if img_chap_bytes:
-            try:
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
-                    f.write(img_chap_bytes)
-                    path_chap = f.name
-                # Centraliza a imagem (largura 150mm)
-                # Pagina A4 = 210mm. Margem esquerda = (210-150)/2 = 30.
-                pdf.image(path_chap, x=30, w=150) 
-                pdf.ln(10) # Espaço após a imagem
+        # Imagem Capítulo
+        if cap.get('imagem_bytes'):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as f:
+                f.write(cap['imagem_bytes'])
+                path = f.name
+            try: 
+                pdf.image(path, x=30, w=150)
+                pdf.ln(10)
             except: pass
-            finally:
-                try: os.remove(path_chap)
-                except: pass
-        # ---------------------------------------
-        
-        # Texto do Capítulo
+            try: os.remove(path)
+            except: pass
+            
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(10)
         pdf.set_font("Helvetica", "", 12)
@@ -164,103 +151,71 @@ def gerar_pdf(plano, conteudo, img_capa_bytes):
         
     return pdf.output(dest="S").encode("latin-1")
 
-# --- APP PRINCIPAL ---
-tema = st.text_input("Tema do Livro:", placeholder="Ex: Mitologia Nórdica")
+# --- APP ---
+tema = st.text_input("Tema do Livro:", placeholder="Ex: Marketing Digital")
 paginas = st.slider("Páginas:", 10, 200, 30)
 
-if st.button("🚀 INICIAR (COM IMAGENS)"):
-    if not api_key:
-        st.error("Cole a API Key!")
-    elif not tema:
-        st.warning("Digite o tema.")
+if st.button("🚀 INICIAR BLINDADO"):
+    if not api_key: st.error("Falta a API Key!")
+    elif not tema: st.warning("Falta o tema.")
     else:
-        status = st.status("🕵️ Detectando modelo do Google...", expanded=True)
+        status = st.status("🔍 Detectando modelo...", expanded=True)
+        modelo, erro = detectar_modelo_disponivel(api_key)
         
-        # 1. DETECÇÃO
-        nome_modelo, erro = detectar_modelo_disponivel(api_key)
-
-        if not nome_modelo:
-            status.update(label="❌ Falha na Chave", state="error")
-            st.error(f"Erro: {erro}")
+        if not modelo:
+            status.update(label="Erro na Chave", state="error")
+            st.error(erro)
         else:
-            status.write(f"✅ Usando modelo: **{nome_modelo}**")
-            
+            status.write(f"✅ Modelo: {modelo}")
             try:
-                # 2. PLANEJAMENTO (Agora pedindo prompts para capítulos também)
+                # 1. Planejamento
                 caps = int(paginas / 2.5)
                 if caps < 4: caps = 4
+                status.write(f"🧠 Planejando {caps} capítulos...")
                 
-                status.write(f"🧠 Planejando {caps} capítulos ilustrados...")
                 prompt_plan = f"""
                 Crie JSON de livro sobre {tema}. {paginas} paginas.
-                O JSON deve incluir prompts visuais para a capa E para cada capítulo.
-                JSON OBRIGATÓRIO:
-                {{
-                    "titulo_livro": "...",
-                    "autor_ficticio": "...",
-                    "prompt_imagem_capa": "Descrição visual da capa...",
-                    "estrutura": [
-                        {{
-                            "capitulo": 1,
-                            "titulo": "...",
-                            "descricao": "...",
-                            "prompt_imagem_capitulo": "Descrição visual para uma imagem que ilustre este capítulo..."
-                        }}
-                    ]
-                }}
+                Inclua prompts de imagem para capa e capitulos.
+                JSON: {{ "titulo_livro": "...", "autor_ficticio": "...", "prompt_imagem_capa": "...", 
+                "estrutura": [ {{ "capitulo": 1, "titulo": "...", "descricao": "...", "prompt_imagem_capitulo": "..." }} ] }}
                 """
                 
-                res = chamar_gemini(prompt_plan, api_key, nome_modelo)
+                # Usa Retry no planejamento também
+                res = tentar_gerar_com_retry(prompt_plan, api_key, modelo)
+                if "ERRO" in res: raise Exception("Falha ao criar o plano do livro.")
                 
                 json_str = res.replace("```json", "").replace("```", "").strip()
-                s = json_str.find('{')
-                e = json_str.rfind('}') + 1
+                s = json_str.find('{'); e = json_str.rfind('}') + 1
                 plano = json.loads(json_str[s:e])
-                
                 st.success(f"📘 {plano['titulo_livro']}")
                 
-                # 3. GERAR CAPA
-                status.write("🎨 Pintando a capa...")
+                # 2. Capa
+                status.write("🎨 Capa...")
                 img_capa = baixar_imagem(plano.get('prompt_imagem_capa', tema))
                 
-                # 4. LOOP DE ESCRITA + GERAÇÃO DE IMAGENS INTERNAS
-                conteudo_final = []
+                # 3. Escrita (Com Retry)
+                conteudo = []
                 bar = status.progress(0)
                 total = len(plano['estrutura'])
                 
                 for i, cap in enumerate(plano['estrutura']):
                     status.write(f"✍️ Cap {cap['capitulo']}/{total}: {cap['titulo']}...")
                     
-                    # 4a. Gera Texto
-                    prompt_texto = f"""
-                    Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'.
-                    Contexto: {cap['descricao']}.
-                    IMPORTANTE: Texto LONGO (1000 palavras), estilo {estilo}. Sem markdown.
-                    """
-                    txt = chamar_gemini(prompt_texto, api_key, nome_modelo)
+                    # AQUI ESTÁ A CORREÇÃO PRINCIPAL: Tentar 3 vezes
+                    prompt = f"Escreva cap '{cap['titulo']}' do livro '{plano['titulo_livro']}'. Contexto: {cap['descricao']}. Texto LONGO (1000 palavras), estilo {estilo}. Sem markdown."
+                    txt = tentar_gerar_com_retry(prompt, api_key, modelo)
                     
-                    # 4b. Gera Imagem do Capítulo (Em paralelo com a escrita)
-                    status.write(f"🖼️ Gerando ilustração para o Cap {cap['capitulo']}...")
-                    prompt_img_cap = cap.get('prompt_imagem_capitulo', f"Image about {cap['titulo']}")
-                    img_chap_bytes = baixar_imagem(prompt_img_cap)
-
-                    # Salva tudo (texto e imagem)
-                    if "ERRO" in txt:
-                        conteudo_final.append({"titulo": cap['titulo'], "texto": "[Erro]", "imagem_bytes": None})
-                    else:
-                        conteudo_final.append({"titulo": cap['titulo'], "texto": txt, "imagem_bytes": img_chap_bytes})
+                    status.write(f"🖼️ Imagem Cap {cap['capitulo']}...")
+                    img_cap = baixar_imagem(cap.get('prompt_imagem_capitulo', cap['titulo']))
                     
+                    conteudo.append({"titulo": cap['titulo'], "texto": txt, "imagem_bytes": img_cap})
                     bar.progress((i+1)/total)
-                    # Pausa para não sobrecarregar a API de imagem gratuita
-                    time.sleep(1) 
+                    time.sleep(2) # Pausa obrigatória para não travar o Google
                     
-                # 5. PDF
-                status.write("🖨️ Diagramando PDF ilustrado...")
-                pdf_bytes = gerar_pdf(plano, conteudo_final, img_capa)
+                # 4. PDF
+                status.write("🖨️ PDF...")
+                pdf = gerar_pdf(plano, conteudo, img_capa)
+                status.update(label="Concluído!", state="complete")
+                st.download_button("📥 Baixar PDF", pdf, "livro_final.pdf", "application/pdf")
                 
-                status.update(label="Livro Ilustrado Pronto!", state="complete")
-                st.download_button("📥 Baixar PDF", pdf_bytes, "livro_ilustrado.pdf", "application/pdf")
-                
-            except Exception as e:
-                st.error(f"Erro: {e}")
-                st.warning("Se o erro for de JSON, tente gerar novamente.")
+            except Exception as e: st.error(f"Erro Fatal: {e}")
