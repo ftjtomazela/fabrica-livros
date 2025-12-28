@@ -8,54 +8,46 @@ import os
 from fpdf import FPDF
 
 # --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Fábrica V7 (Anti-Bloqueio)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="Fábrica V8 (Seletor Manual)", page_icon="🎛️", layout="wide")
 
 st.markdown("""
 <style>
-    .stButton>button { width: 100%; background-color: #27ae60; color: white; height: 3.5em; border-radius: 8px; }
-    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #e8f5e9; margin-bottom: 20px; }
+    .stButton>button { width: 100%; background-color: #4b4b4b; color: white; height: 3.5em; border-radius: 8px; }
+    .status-box { padding: 15px; border: 1px solid #ddd; border-radius: 8px; background: #f0f0f0; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ Fábrica V7 (Diagnóstico & Anti-Bloqueio)")
-st.info("Sistema otimizado para temas sensíveis (Marketing/Finanças) e com relatórios de erro detalhados.")
+st.title("🎛️ Fábrica V8 (Controle Total)")
+st.info("Erro 429? Basta trocar o modelo na barra lateral e tentar de novo.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.header("🔑 Acesso")
-    api_key = st.text_input("Sua API Key do Google:", type="password")
-    st.markdown("[Criar Chave Grátis](https://aistudio.google.com/app/apikey)")
+    st.header("🔑 Configurações")
+    api_key = st.text_input("Sua API Key:", type="password")
+    st.markdown("[Criar Nova Chave (Se travar)](https://aistudio.google.com/app/apikey)")
+    
     st.divider()
-    estilo = st.selectbox("Estilo do Texto:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
+    
+    # --- SELETOR MANUAL DE MODELOS ---
+    # Aqui forçamos os modelos estáveis do Google, fugindo dos experimentais limitados
+    modelos_seguros = [
+        "gemini-1.5-flash",       # O mais equilibrado
+        "gemini-1.5-flash-8b",    # O mais rápido e econômico
+        "gemini-1.5-pro",         # O mais inteligente (mas mais lento)
+        "gemini-1.0-pro"          # O clássico (reserva)
+    ]
+    modelo_escolhido = st.selectbox("Escolha o Modelo:", modelos_seguros)
+    
+    st.divider()
+    estilo = st.selectbox("Estilo:", ["Didático", "Storytelling", "Acadêmico", "Técnico"])
 
-# --- FUNÇÃO DETETIVE (Melhorada) ---
-def detectar_modelo_disponivel(chave):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={chave}"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200: return None, f"Erro HTTP {response.status_code}: {response.text}"
-        dados = response.json()
-        
-        # 1. Tenta achar o Flash (Rápido e Estável)
-        if 'models' in dados:
-            for m in dados['models']:
-                if 'flash' in m['name'] and 'generateContent' in m.get('supportedGenerationMethods', []):
-                    return m['name'], None
-            
-            # 2. Se não, pega o Pro
-            for m in dados['models']:
-                if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    return m['name'], None
-                    
-        return None, "Nenhum modelo de texto liberado na sua chave."
-    except Exception as e: return None, str(e)
-
-# --- FUNÇÃO CHAMADA API (Com logs de erro) ---
+# --- FUNÇÃO CHAMADA API ---
 def chamar_gemini(prompt, chave, nome_modelo):
-    url = f"https://generativelanguage.googleapis.com/v1beta/{nome_modelo}:generateContent?key={chave}"
+    # Usa o modelo que você escolheu na caixa
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{nome_modelo}:generateContent?key={chave}"
     headers = {"Content-Type": "application/json"}
     
-    # Configuração de Segurança para aceitar temas como "Tráfego Pago"
+    # Filtros de segurança no mínimo para evitar bloqueio de "Tráfego Pago"
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_ONLY_HIGH"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_ONLY_HIGH"},
@@ -71,41 +63,41 @@ def chamar_gemini(prompt, chave, nome_modelo):
     try:
         response = requests.post(url, headers=headers, json=data, timeout=60)
         
+        # Se der erro 429 (Cota), retornamos uma mensagem específica
+        if response.status_code == 429:
+            return "ERRO 429: Cota excedida. Troque o modelo na barra lateral!"
+            
         if response.status_code != 200:
             return f"ERRO API ({response.status_code}): {response.text}"
         
         resultado = response.json()
         
-        # Verifica se foi bloqueado por segurança
         if 'promptFeedback' in resultado and 'blockReason' in resultado['promptFeedback']:
-            return f"BLOQUEIO: O Google bloqueou o tema por segurança ({resultado['promptFeedback']['blockReason']})."
+            return f"BLOQUEIO: Tema sensível detectado ({resultado['promptFeedback']['blockReason']})."
             
         try:
             return resultado['candidates'][0]['content']['parts'][0]['text']
         except KeyError:
-            return "ERRO: Resposta vazia ou bloqueada pelo filtro de conteúdo."
+            return "ERRO: Resposta vazia."
             
     except Exception as e:
         return f"ERRO CONEXÃO: {e}"
 
-# --- FUNÇÃO RETRY (Mais paciente) ---
-def tentar_gerar_com_retry(prompt, chave, modelo, tentativas=3):
-    """Tenta 3 vezes. Se for erro 429 (Muitos pedidos), espera mais tempo."""
-    erros_log = []
-    
-    for i in range(tentativas):
+# --- FUNÇÃO RETRY ---
+def tentar_gerar(prompt, chave, modelo):
+    # Tenta 2 vezes. Se der erro 429, desiste logo para você trocar o modelo.
+    for i in range(2):
         res = chamar_gemini(prompt, chave, modelo)
         
+        if "ERRO 429" in res:
+            return res # Retorna o erro imediatamente para o usuário ver
+            
         if "ERRO" not in res and "BLOQUEIO" not in res:
             return res
         
-        erros_log.append(res)
-        
-        # Se for erro de Cota (429), espera 15 segundos. Se não, 5.
-        wait_time = 15 if "429" in res else 5
-        time.sleep(wait_time)
+        time.sleep(5) # Espera 5s antes de tentar de novo
     
-    return f"[FALHA FINAL] Não foi possível gerar após 3 tentativas. Último erro: {erros_log[-1]}"
+    return res # Retorna o último erro
 
 # --- FUNÇÕES VISUAIS ---
 class PDF(FPDF):
@@ -175,8 +167,8 @@ def gerar_pdf(plano, conteudo, img_capa_bytes):
         pdf.set_font("Helvetica", "", 12)
         
         texto_pag = cap['texto']
-        if "FALHA FINAL" in texto_pag or "ERRO" in texto_pag:
-             pdf.set_text_color(255, 0, 0) # Vermelho para avisar erro
+        if "ERRO" in texto_pag:
+             pdf.set_text_color(255, 0, 0)
         else:
              pdf.set_text_color(0, 0, 0)
              
@@ -185,92 +177,89 @@ def gerar_pdf(plano, conteudo, img_capa_bytes):
     return pdf.output(dest="S").encode("latin-1")
 
 # --- APP ---
-tema = st.text_input("Tema do Livro:", placeholder="Ex: Tráfego Pago e Marketing")
+tema = st.text_input("Tema do Livro:", placeholder="Ex: Tráfego Pago")
 paginas = st.slider("Páginas:", 10, 200, 30)
 
-if st.button("🚀 INICIAR V7 (DIAGNÓSTICO)"):
-    if not api_key: st.error("Falta a API Key!")
-    elif not tema: st.warning("Falta o tema.")
+if st.button("🚀 INICIAR V8"):
+    if not api_key: st.error("Falta API Key")
+    elif not tema: st.warning("Falta Tema")
     else:
-        status = st.status("🔍 Detectando modelo...", expanded=True)
-        modelo, erro = detectar_modelo_disponivel(api_key)
+        status = st.status(f"Conectando ao modelo {modelo_escolhido}...", expanded=True)
         
-        if not modelo:
-            status.update(label="Erro Crítico", state="error")
-            st.error(f"Não foi possível conectar. Motivo: {erro}")
-        else:
-            status.write(f"✅ Modelo Detectado: {modelo}")
-            try:
-                # 1. Planejamento (Com prompt 'Acadêmico' para evitar bloqueio)
-                caps = int(paginas / 2.5)
-                if caps < 4: caps = 4
-                status.write(f"🧠 Planejando {caps} capítulos...")
+        try:
+            # 1. Planejamento
+            caps = int(paginas / 2.5)
+            if caps < 4: caps = 4
+            status.write(f"🧠 Planejando {caps} capítulos...")
+            
+            prompt_plan = f"""
+            Atue como professor. Crie plano de livro EDUCACIONAL sobre: {tema}.
+            Meta: {paginas} paginas.
+            JSON OBRIGATÓRIO:
+            {{
+                "titulo_livro": "...",
+                "autor_ficticio": "...",
+                "prompt_imagem_capa": "...",
+                "estrutura": [
+                    {{ "capitulo": 1, "titulo": "...", "descricao": "...", "prompt_imagem_capitulo": "..." }}
+                ]
+            }}
+            """
+            
+            res = tentar_gerar(prompt_plan, api_key, modelo_escolhido)
+            
+            if "ERRO 429" in res:
+                status.update(label="Cota Excedida", state="error")
+                st.error(f"🛑 O modelo {modelo_escolhido} está cheio por hoje. Mude para outro na barra lateral (ex: flash-8b) e tente de novo!")
+                st.stop()
                 
-                # Prompt modificado para passar nos filtros de segurança
-                prompt_plan = f"""
-                Atue como um professor universitário. Crie um plano de curso (livro) estritamente EDUCACIONAL e TEÓRICO sobre: {tema}.
-                Objetivo: Ensinar conceitos técnicos de forma ética.
-                Meta: {paginas} páginas.
-                Saída OBRIGATÓRIA em JSON:
-                {{
-                    "titulo_livro": "...",
-                    "autor_ficticio": "...",
-                    "prompt_imagem_capa": "...",
-                    "estrutura": [
-                        {{ "capitulo": 1, "titulo": "...", "descricao": "...", "prompt_imagem_capitulo": "..." }}
-                    ]
-                }}
+            if "ERRO" in res: raise Exception(res)
+            
+            # Extração JSON
+            json_match = re.search(r'\{.*\}', res, re.DOTALL)
+            if not json_match: raise Exception("JSON inválido recebido.")
+            plano = json.loads(json_match.group(0))
+            
+            st.success(f"📘 {plano['titulo_livro']}")
+            
+            # 2. Capa
+            status.write("🎨 Capa...")
+            img_capa = baixar_imagem(plano.get('prompt_imagem_capa', tema))
+            
+            # 3. Escrita
+            conteudo = []
+            bar = status.progress(0)
+            total = len(plano['estrutura'])
+            
+            for i, cap in enumerate(plano['estrutura']):
+                status.write(f"✍️ Cap {cap['capitulo']}/{total}: {cap['titulo']}...")
+                
+                prompt = f"""
+                Escreva o capítulo '{cap['titulo']}' do livro '{plano['titulo_livro']}'.
+                Contexto acadêmico: {cap['descricao']}.
+                Texto LONGO (1000 palavras), estilo {estilo}. Sem markdown.
                 """
                 
-                res = tentar_gerar_com_retry(prompt_plan, api_key, modelo)
+                txt = tentar_gerar(prompt, api_key, modelo_escolhido)
                 
-                # Se falhar aqui, mostra o erro EXATO para sabermos o que houve
-                if "ERRO" in res or "FALHA" in res:
-                    raise Exception(f"Erro no Planejamento: {res}")
+                # Se der erro 429 no meio do livro, avisa para trocar
+                if "ERRO 429" in txt:
+                    st.warning("⚠️ Cota acabou no meio do livro. O PDF será gerado até aqui.")
+                    conteudo.append({"titulo": cap['titulo'], "texto": "ERRO: Cota excedida. Gere o restante em outro modelo.", "imagem_bytes": None})
+                    break
                 
-                # Limpeza JSON Robusta (Regex)
-                json_match = re.search(r'\{.*\}', res, re.DOTALL)
-                if not json_match:
-                    raise Exception(f"O Google não retornou JSON válido. Retornou: {res[:100]}...")
+                status.write(f"🖼️ Ilustração {cap['capitulo']}...")
+                img_cap = baixar_imagem(cap.get('prompt_imagem_capitulo', cap['titulo']))
                 
-                json_str = json_match.group(0)
-                plano = json.loads(json_str)
-                st.success(f"📘 {plano['titulo_livro']}")
+                conteudo.append({"titulo": cap['titulo'], "texto": txt, "imagem_bytes": img_cap})
+                bar.progress((i+1)/total)
+                time.sleep(2)
                 
-                # 2. Capa
-                status.write("🎨 Capa...")
-                img_capa = baixar_imagem(plano.get('prompt_imagem_capa', tema))
-                
-                # 3. Escrita
-                conteudo = []
-                bar = status.progress(0)
-                total = len(plano['estrutura'])
-                
-                for i, cap in enumerate(plano['estrutura']):
-                    status.write(f"✍️ Cap {cap['capitulo']}/{total}: {cap['titulo']}...")
-                    
-                    # Prompt também suavizado para evitar bloqueio
-                    prompt = f"""
-                    Escreva o capítulo '{cap['titulo']}' do livro '{plano['titulo_livro']}'.
-                    Contexto puramente educacional: {cap['descricao']}.
-                    Texto LONGO (1000 palavras), estilo {estilo}. Sem markdown. Foco técnico.
-                    """
-                    
-                    txt = tentar_gerar_com_retry(prompt, api_key, modelo)
-                    
-                    status.write(f"🖼️ Ilustrando Cap {cap['capitulo']}...")
-                    img_cap = baixar_imagem(cap.get('prompt_imagem_capitulo', cap['titulo']))
-                    
-                    conteudo.append({"titulo": cap['titulo'], "texto": txt, "imagem_bytes": img_cap})
-                    bar.progress((i+1)/total)
-                    time.sleep(2)
-                    
-                # 4. PDF
-                status.write("🖨️ PDF...")
-                pdf = gerar_pdf(plano, conteudo, img_capa)
-                status.update(label="Concluído!", state="complete")
-                st.download_button("📥 Baixar PDF V7", pdf, "livro_v7.pdf", "application/pdf")
-                
-            except Exception as e:
-                status.update(label="Erro Fatal", state="error")
-                st.error(f"🛑 OCORREU UM ERRO: {e}")
+            # 4. PDF
+            status.write("🖨️ PDF...")
+            pdf = gerar_pdf(plano, conteudo, img_capa)
+            status.update(label="Pronto!", state="complete")
+            st.download_button("📥 Baixar PDF V8", pdf, "livro_v8.pdf", "application/pdf")
+            
+        except Exception as e:
+            st.error(f"Erro: {e}")
